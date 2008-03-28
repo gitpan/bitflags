@@ -1,82 +1,180 @@
 package bitflags;
 
+use 5.008007;
 use strict;
+use warnings;
 
-my $i = .5;
+require Exporter;
 
+our @ISA = qw(Exporter);
 
-sub import {
-  my $self = shift;
-  my $caller = (caller)[0];
+our @EXPORT_OK = qw ( getmask );
+our @EXPORT = qw( );
+our $VERSION = 0.01;
 
-  if ($_[0] =~ /^:start=(\^?)(\d+)$/) {
-    if ($1) { $i = 2 ** ($2-1) }
-    elsif ($2 & ($2 - 1)) {
-      require Carp;
-      Carp::croak("$2 is not a power of two");
+no strict 'refs';
+
+    my ($caller,%FLAGMAP);
+    my ($igcase,$mask) = (0,1);
+
+sub import
+{
+    my $class = shift;
+    return unless @_;
+    $caller = caller; # i.e. = caller[0]
+
+#    print "bitflags::import from caller $caller\n";
+
+    my ($head) = @_;
+
+    # begin optiomally assign $igcase,$mask using an options hash as first argument
+    if ( ref($head) eq 'HASH' )
+    {
+        $igcase = $head->{ic} if exists $head->{ic};
+        $head->{sm} = delete $head->{startmask}  if exists $head->{startmask};
+        $mask = $head->{sm} if exists $head->{sm};
+        shift;
     }
-    else { $i = $2/2 }
-    shift;
-  }
+    else
+    #   or only $mask simply with a numeric first argument
+    {
+        if ($head =~ qr{\A\d+\Z})
+        {
+            $mask = shift  ;
+        }
+    }
+    # end   optiomally assign ...
 
-  no strict 'refs';
-  for (@_) {
-    my $j = ($i *= 2);
-    *{"${caller}::$_"} = sub () { $j };
-  }
+    foreach my $flagname (@_)
+    {
+        *{$caller.'::'.$flagname} = sub () {$mask};
+        my $flagalias = $igcase ? lc($flagname) : $flagname;
+        $FLAGMAP{$flagalias} = $mask;
+        $mask <<= 1
+    }
+
+#    $class->export_to_level(2,$class,'getmask');
+    *{$caller.'::getmask'} =
+    sub
+    {
+        my $r = 0;
+        foreach my $v (@_)
+        {
+            my $vkey = $igcase ? lc($v) : $v;
+            if ( exists $FLAGMAP{$vkey} )
+            {
+                $r |= $FLAGMAP{$vkey};
+            }
+            else
+            {
+                warn "unknown flagname: $v\n";
+            }
+        }
+        $r
+    }
+    unless defined *{$caller.'::getmask'};
 }
 
 
 1;
-
 __END__
 
 =head1 NAME
 
-bitflags - Perl module for generating bit flags
+bitflags - Simplify export of bitflag names
 
 =head1 SYNOPSIS
 
-  use bitflags qw( ALPHA BETA GAMMA DELTA );
-  use bitflags qw( EPSILON ZETA ETA THETA );
-  
-  use bitflags qw( :start=2 BEE CEE DEE EEE EFF GEE );
-  
-  use bitflags qw( :start=^3 EIGHT SIXTEEN THIRTY_TWO );
+=over
+
+=item    C<package SomeModule;>
+
+    use bitflags qw(V1 V2 ...);
+
+Series of constants C<V1,V2,V3 ...> now available with values C<1,2,4,..>
+
+    do  something with constants V1, V3|~V4 and the like ;
+    sub anyFunc
+    {
+        $v = getmask @_;
+        ...
+    }
+
+=item    C<package AnotherModule;>
+
+    use SomeModule;
+    SomeModule::anyFunc(qw(V3 V5 V11 ...))
+
+Inside C<SomeModule::anyFunc> with assignment C<$v=getmask(@_)>  these arguments arrive as C<V3|V5|V11>
+
+=back
 
 =head1 DESCRIPTION
 
-The C<bitflags> module allows you to form a set of unique bit flags, for ORing
-together.  Think of the C<O_> constants you get from C<Fcntl>... that's the
-idea.
+=head3 Core Features
 
-Successive calls remember the previous power used, so you don't have to set a
-starting number, or declare all the constants on one line.
+C<use bitflags qw(V1 V2 ...)> defines a series of constants which denote different bitflags in
+the calling module, say C<package SomeModule>.
+The constants are used as ordinary names, usually making up boolean expressions by bitwise
+operation-combinations.
+If  C<AnotherModule> calls C<SomeModule>  and refers to the flagnames, export of the names would be demanded.
+Yet unlike in C<SomeModule> the binary 'or' will be the only opreation needed to combine the flags.
+E.g., if C<alfa, beta, gamma, delta, fi> are names for C<1,2,4,8,16>, a choice term C<beta|delta|fi>
+could be used in C<AnotherModule>.
+Pragma C<bitflag> makes the export of the flagnames dispensable, as it represents the choice term as
+S<C<getmask(qw(beta delta fi))>>.
+C<getmask()> converts a list of strings containing names of flags into the boolean union of those flags.
+Thus the export of a lot of symbols is reduced to the export of a sole subname,
+C<getmask()>, which is defined in C<package bitflags> and exported by default to C<SomeModule>.
+Coupling of packages is diminished this way.
 
-If you do want to set a starting value, use the C<:start> flag as the first
-argument in the import list.  If the flag is C<:start=NNN>, where C<NNN> is
-some positive integer, that value is checked to ensure it's a power of two,
-and that value is used as the starting value.  If it is not a power of two,
-the program will croak.  If the flag is C<:start=^NNN>, where C<NNN> is some
-positive integer, that value is the power of two to start with.
+=head3 Special Features
 
-=head2 Implementation
+Multiple uses of "C<bitflags>" may occur in a package.
+C<use bitflags @thislist> and C<use bitflags @thatlist>,
+regardless whether adjacent or separated in code,
+do the same as C<use bitflags @thislist,@thatlist>.
+However, a second statement could also determine values of a separate range.
+If, in contrast to above specifications, the first argument of C<use bitflags> is a hash and not a string,
+it represents a collection of options that can
 
-The flags are created as C<()>-prototyped functions in the caller's package,
-not unlike the C<constant> pragma.
+=over 4
+
+=item 1.
+
+override the value of the starting flag -- apply option C<sm=E<gt>$m>
+
+=item 2.
+
+allow deviation of the case of characters in arguments of C<getmask> -- with option C<ic=E<gt>1>.
+
+=back
+
+One can write, e.g., C<use bitflags {sm=E<gt>128, ic=E<gt>1}...>
+
+Furthermore, C<use bitflags {sm=E<gt>$m}...> can be abbreviated to C<use bitflags $m...>.
+
+=head3 Multiple uses
+
+By option C<sm=E<gt>$number> one can define another name for a value already
+assigned by a prior C<use bitflags>.
+
+Furthermore C<use bitflags> could be called from different packages in one
+application run. If so, the module loaded later shall continue counting
+where the earlier module stopped, i.e. if C<ModuleA::LASTFLAG> is 256, calling
+C<use bitflags FIRSTFLAG, ...> in C<ModuleB> makes C<ModuleB::FIRSTFLAG> being 512.
+If C<ModuleB> use other names independently to C<ModuleA> it makes sense to restart
+with value 1 by using C<{sm=E<gt>1}> as first parameter.
 
 =head1 AUTHOR
 
-Jeff "C<japhy>" Pinyan.
+Josef SchE<ouml>nbrunner E<lt>j.schoenbrunner@schule.atE<gt>
 
-URL: F<http://www.pobox.com/~japhy/>
+=head1 COPYRIGHT AND LICENSE
 
-Email: F<japhy@pobox.com>, F<PINYAN@cpan.org>
-
-CPAN ID: C<PINYAN>
-
-Online at: C<japhy> on C<#perl> on DALnet and EFnet.  C<japhy> at
-F<http://www.perlguru.com/>.  C<japhy> at F<http://www.perlmonks.org/>.
-"Coding With Style" column at F<http://www.perlmonth.com/>.
+Copyright (c) 2008  by Josef SchE<ouml>nbrunner
+This library is free software; you can redistribute it and/or modify
+it under the same terms as Perl itself, either Perl version 5.8.7 or,
+at your option, any later version of Perl 5 you may have available.
 
 =cut
